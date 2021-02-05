@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "active_record/migration/join_table"
 require "active_support/core_ext/string/access"
 require "digest/sha2"
 
@@ -524,7 +523,7 @@ module ActiveRecord
       # <tt>:primary_key</tt>, <tt>:string</tt>, <tt>:text</tt>,
       # <tt>:integer</tt>, <tt>:bigint</tt>, <tt>:float</tt>, <tt>:decimal</tt>, <tt>:numeric</tt>,
       # <tt>:datetime</tt>, <tt>:time</tt>, <tt>:date</tt>,
-      # <tt>:binary</tt>, <tt>:boolean</tt>.
+      # <tt>:binary</tt>, <tt>:blob</tt>, <tt>:boolean</tt>.
       #
       # You may use a type not in this list as long as it is supported by your
       # database (for example, "polygon" in MySQL), but this will not be database
@@ -533,7 +532,7 @@ module ActiveRecord
       # Available options are (none of these exists by default):
       # * <tt>:limit</tt> -
       #   Requests a maximum column length. This is the number of characters for a <tt>:string</tt> column
-      #   and number of bytes for <tt>:text</tt>, <tt>:binary</tt>, and <tt>:integer</tt> columns.
+      #   and number of bytes for <tt>:text</tt>, <tt>:binary</tt>, <tt>:blob</tt>, and <tt>:integer</tt> columns.
       #   This option is ignored by some backends.
       # * <tt>:default</tt> -
       #   The column's default value. Use +nil+ for +NULL+.
@@ -723,7 +722,7 @@ module ActiveRecord
       #
       # generates:
       #
-      #   CREATE INDEX suppliers_name_index ON suppliers(name)
+      #   CREATE INDEX index_suppliers_on_name ON suppliers(name)
       #
       # ====== Creating a index which already exists
       #
@@ -731,7 +730,7 @@ module ActiveRecord
       #
       # generates:
       #
-      #   CREATE INDEX IF NOT EXISTS suppliers_name_index ON suppliers(name)
+      #   CREATE INDEX IF NOT EXISTS index_suppliers_on_name ON suppliers(name)
       #
       # Note: Not supported by MySQL.
       #
@@ -741,7 +740,7 @@ module ActiveRecord
       #
       # generates:
       #
-      #   CREATE UNIQUE INDEX accounts_branch_id_party_id_index ON accounts(branch_id, party_id)
+      #   CREATE UNIQUE INDEX index_accounts_on_branch_id_and_party_id ON accounts(branch_id, party_id)
       #
       # ====== Creating a named index
       #
@@ -771,7 +770,7 @@ module ActiveRecord
       #
       # ====== Creating an index with a sort order (desc or asc, asc is the default)
       #
-      #   add_index(:accounts, [:branch_id, :party_id, :surname], order: {branch_id: :desc, party_id: :asc})
+      #   add_index(:accounts, [:branch_id, :party_id, :surname], name: 'by_branch_desc_party', order: {branch_id: :desc, party_id: :asc})
       #
       # generates:
       #
@@ -891,6 +890,8 @@ module ActiveRecord
       #   rename_index :people, 'index_people_on_last_name', 'index_users_on_last_name'
       #
       def rename_index(table_name, old_name, new_name)
+        old_name = old_name.to_s
+        new_name = new_name.to_s
         validate_index_length!(table_name, new_name)
 
         # this is a naive implementation; some DBs may support this more efficiently (PostgreSQL, for instance)
@@ -1143,6 +1144,11 @@ module ActiveRecord
       #
       #   ALTER TABLE "products" ADD CONSTRAINT price_check CHECK (price > 0)
       #
+      # The +options+ hash can include the following keys:
+      # [<tt>:name</tt>]
+      #   The constraint name. Defaults to <tt>chk_rails_<identifier></tt>.
+      # [<tt>:validate</tt>]
+      #   (PostgreSQL only) Specify whether or not the constraint should be validated. Defaults to +true+.
       def add_check_constraint(table_name, expression, **options)
         return unless supports_check_constraints?
 
@@ -1186,13 +1192,7 @@ module ActiveRecord
         { primary_key: true }
       end
 
-      def assume_migrated_upto_version(version, migrations_paths = nil)
-        unless migrations_paths.nil?
-          ActiveSupport::Deprecation.warn(<<~MSG.squish)
-            Passing migrations_paths to #assume_migrated_upto_version is deprecated and will be removed in Rails 6.1.
-          MSG
-        end
-
+      def assume_migrated_upto_version(version)
         version = version.to_i
         sm_table = quote_table_name(schema_migration.table_name)
 
@@ -1254,6 +1254,25 @@ module ActiveRecord
       #
       def columns_for_distinct(columns, orders) # :nodoc:
         columns
+      end
+
+      def distinct_relation_for_primary_key(relation) # :nodoc:
+        values = columns_for_distinct(
+          visitor.compile(relation.table[relation.primary_key]),
+          relation.order_values
+        )
+
+        limited = relation.reselect(values).distinct!
+        limited_ids = select_rows(limited.arel, "SQL").map(&:last)
+
+        if limited_ids.empty?
+          relation.none!
+        else
+          relation.where!(relation.primary_key => limited_ids)
+        end
+
+        relation.limit_value = relation.offset_value = nil
+        relation
       end
 
       # Adds timestamps (+created_at+ and +updated_at+) columns to +table_name+.
@@ -1387,8 +1406,14 @@ module ActiveRecord
 
           checks = []
 
+          if !options.key?(:name) && column_name.is_a?(String) && /\W/.match?(column_name)
+            options[:name] = index_name(table_name, column_name)
+            column_names = []
+          else
+            column_names = index_column_names(column_name || options[:column])
+          end
+
           checks << lambda { |i| i.name == options[:name].to_s } if options.key?(:name)
-          column_names = index_column_names(column_name || options[:column])
 
           if column_names.present?
             checks << lambda { |i| index_name(table_name, i.columns) == index_name(table_name, column_names) }

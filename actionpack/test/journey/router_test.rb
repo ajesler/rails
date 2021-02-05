@@ -41,7 +41,7 @@ module ActionDispatch
       end
 
       def test_regexp_first_precedence
-        get "/whois/:domain", domain: /\w+\.[\w\.]+/, to: "foo#bar"
+        get "/whois/:domain", domain: /\w+\.[\w.]+/, to: "foo#bar"
         get "/whois/:id(.:format)", to: "foo#baz"
 
         env = rails_env "PATH_INFO" => "/whois/example.com"
@@ -61,7 +61,7 @@ module ActionDispatch
         get "/foo/:id", id: /\d/, anchor: false, to: "foo#bar"
 
         assert_raises(ActionController::UrlGenerationError) do
-          _generate(nil, { controller: "foo", action: "bar", id: "10" }, {})
+          @route_set.url_for({ controller: "foo", action: "bar", id: "10" }, nil)
         end
       end
 

@@ -71,7 +71,7 @@ class InnerJoinAssociationTest < ActiveRecord::TestCase
 
   def test_deduplicate_joins
     posts = Post.arel_table
-    constraint = posts[:author_id].eq(Author.arel_attribute(:id))
+    constraint = posts[:author_id].eq(Author.arel_table[:id])
 
     authors = Author.joins(posts.create_join(posts, posts.create_on(constraint)))
     authors = authors.joins(:author_address).merge(authors.where("posts.type": "SpecialPost"))
@@ -120,6 +120,11 @@ class InnerJoinAssociationTest < ActiveRecord::TestCase
   def test_join_conditions_allow_nil_associations
     authors = Author.includes(:essays).where(essays: { id: nil })
     assert_equal 1, authors.count
+  end
+
+  def test_join_with_reserved_word
+    assert_equal [categories_posts(:technology_welcome)],
+      Post::CategoryPost.joins(:group).where("group.id": categories(:technology))
   end
 
   def test_find_with_implicit_inner_joins_without_select_does_not_imply_readonly

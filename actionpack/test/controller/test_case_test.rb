@@ -247,7 +247,6 @@ XML
     assert_equal JSON.parse(@response.body)["foo"], "bar"
   end
 
-
   def test_body_stream
     params = Hash[:page, { name: "page name" }, "some key", 123]
 
@@ -597,14 +596,26 @@ XML
     post :render_body, params: { bool_value: true, str_value: "string", num_value: 2 }, as: :json
 
     assert_equal "application/json", @request.headers["CONTENT_TYPE"]
-    assert_equal true, @request.request_parameters[:bool_value]
-    assert_equal "string", @request.request_parameters[:str_value]
-    assert_equal 2, @request.request_parameters[:num_value]
+    assert_equal true, @request.request_parameters["bool_value"]
+    assert_equal "string", @request.request_parameters["str_value"]
+    assert_equal 2, @request.request_parameters["num_value"]
   end
 
   def test_using_as_json_sets_format_json
     post :render_body, params: { bool_value: true, str_value: "string", num_value: 2 }, as: :json
     assert_equal "json", @request.format
+  end
+
+  def test_using_as_json_with_empty_params
+    post :test_params, params: { foo: { bar: [] } }, as: :json
+
+    assert_equal({ "bar" => [] }, JSON.load(response.body)["foo"])
+  end
+
+  def test_using_as_json_with_path_parameters
+    post :test_params, params: { id: "12345" }, as: :json
+
+    assert_equal("12345", @request.path_parameters[:id])
   end
 
   def test_mutating_content_type_headers_for_plain_text_files_sets_the_header
@@ -945,6 +956,19 @@ XML
       assert_deprecated(expected) do
         uploaded_file = fixture_file_upload("multipart/ruby_on_rails.jpg", "image/jpg")
         assert_equal File.open("#{FILES_DIR}/ruby_on_rails.jpg", READ_PLAIN).read, uploaded_file.read
+      end
+    end
+  end
+
+  def test_fixture_file_upload_relative_to_fixture_path_with_relative_file_fixture_path
+    TestCaseTest.stub :fixture_path, File.expand_path("../fixtures", __dir__) do
+      TestCaseTest.stub :file_fixture_path, "test/fixtures/multipart" do
+        expected = "`fixture_file_upload(\"multipart/ruby_on_rails.jpg\")` to `fixture_file_upload(\"ruby_on_rails.jpg\")`"
+
+        assert_deprecated(expected) do
+          uploaded_file = fixture_file_upload("multipart/ruby_on_rails.jpg", "image/jpg")
+          assert_equal File.open("#{FILES_DIR}/ruby_on_rails.jpg", READ_PLAIN).read, uploaded_file.read
+        end
       end
     end
   end

@@ -445,7 +445,9 @@ class ActiveStorage::ManyAttachedTest < ActiveSupport::TestCase
       @user.highlights.attach blobs
       assert @user.highlights.attached?
 
-      @user.highlights.purge
+      assert_changes -> { @user.updated_at } do
+        @user.highlights.purge
+      end
       assert_not @user.highlights.attached?
       assert_not ActiveStorage::Blob.exists?(blobs.first.id)
       assert_not ActiveStorage::Blob.exists?(blobs.second.id)
@@ -487,7 +489,9 @@ class ActiveStorage::ManyAttachedTest < ActiveSupport::TestCase
       assert @user.highlights.attached?
 
       perform_enqueued_jobs do
-        @user.highlights.purge_later
+        assert_changes -> { @user.updated_at } do
+          @user.highlights.purge_later
+        end
       end
 
       assert_not @user.highlights.attached?
@@ -622,6 +626,26 @@ class ActiveStorage::ManyAttachedTest < ActiveSupport::TestCase
     end
 
     assert_match(/Cannot configure service :unknown for User#featured_photos/, error.message)
+  end
+
+  test "creating variation by variation name" do
+    @user.highlights_with_variants.attach fixture_file_upload("racecar.jpg")
+    variant = @user.highlights_with_variants.first.variant(:thumb).processed
+
+    image = read_image(variant)
+    assert_equal "JPEG", image.type
+    assert_equal 100, image.width
+    assert_equal 67, image.height
+  end
+
+  test "raises error when unknown variant name is used" do
+    @user.highlights_with_variants.attach fixture_file_upload("racecar.jpg")
+
+    error = assert_raises ArgumentError do
+      @user.highlights_with_variants.first.variant(:unknown).processed
+    end
+
+    assert_match(/Cannot find variant :unknown for User#highlights_with_variants/, error.message)
   end
 
   private

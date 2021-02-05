@@ -27,7 +27,6 @@ if ActiveRecord::Base.connection.prepared_statements
         super
         @connection = ActiveRecord::Base.connection
         @subscriber = LogListener.new
-        @pk = Topic.columns_hash[Topic.primary_key]
         @subscription = ActiveSupport::Notifications.subscribe("sql.active_record", @subscriber)
       end
 
@@ -67,8 +66,8 @@ if ActiveRecord::Base.connection.prepared_statements
         topic_sql = cached_statement(Topic, Topic.primary_key)
         assert_includes statement_cache, to_sql_key(topic_sql)
 
-        e = assert_raise { cached_statement(SillyReply, SillyReply.primary_key) }
-        assert_equal "SillyReply has no cached statement by \"id\"", e.message
+        reply_sql = cached_statement(SillyReply, SillyReply.primary_key)
+        assert_includes statement_cache, to_sql_key(reply_sql)
 
         replies = SillyReply.where(id: 2).limit(1)
         assert_includes statement_cache, to_sql_key(replies.arel)
@@ -83,8 +82,8 @@ if ActiveRecord::Base.connection.prepared_statements
         topic_sql = cached_statement(Topic, ["id"])
         assert_includes statement_cache, to_sql_key(topic_sql)
 
-        e = assert_raise { cached_statement(SillyReply, ["id"]) }
-        assert_equal "SillyReply has no cached statement by [\"id\"]", e.message
+        reply_sql = cached_statement(SillyReply, ["id"])
+        assert_includes statement_cache, to_sql_key(reply_sql)
 
         replies = SillyReply.where(id: 2).limit(1)
         assert_includes statement_cache, to_sql_key(replies.arel)
@@ -158,7 +157,7 @@ if ActiveRecord::Base.connection.prepared_statements
       end
 
       def test_logs_legacy_binds_after_type_cast
-        binds = [[@pk, "10"]]
+        binds = [[Topic.column_for_attribute("id"), "10"]]
         assert_deprecated do
           assert_logs_binds(binds)
         end
@@ -260,7 +259,7 @@ if ActiveRecord::Base.connection.prepared_statements
           }.new
 
           logger.sql(event)
-          assert_match([[@pk.name, 10]].inspect, logger.debugs.first)
+          assert_match %r(\[\["id", 10\]\]\z), logger.debugs.first
         end
     end
   end

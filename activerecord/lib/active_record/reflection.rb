@@ -162,10 +162,8 @@ module ActiveRecord
       # <tt>composed_of :balance, class_name: 'Money'</tt> returns <tt>'Money'</tt>
       # <tt>has_many :clients</tt> returns <tt>'Client'</tt>
       def class_name
-        @class_name ||= -(options[:class_name]&.to_s || derive_class_name)
+        @class_name ||= -(options[:class_name] || derive_class_name).to_s
       end
-
-      JoinKeys = Struct.new(:key, :foreign_key) # :nodoc:
 
       # Returns a list of scopes that should be applied for this Reflection
       # object when querying the database.
@@ -268,7 +266,7 @@ module ActiveRecord
       def has_cached_counter?
         options[:counter_cache] ||
           inverse_which_updates_counter_cache && inverse_which_updates_counter_cache.options[:counter_cache] &&
-          !!active_record.columns_hash[counter_cache_column]
+          active_record.has_attribute?(counter_cache_column)
       end
 
       def counter_must_be_updated_by_has_many?
@@ -291,14 +289,6 @@ module ActiveRecord
         )
       end
 
-      def join_primary_key(klass = nil)
-        foreign_key
-      end
-
-      def join_foreign_key
-        active_record_primary_key
-      end
-
       def strict_loading?
         options[:strict_loading]
       end
@@ -315,6 +305,12 @@ module ActiveRecord
 
         def primary_key(klass)
           klass.primary_key || raise(UnknownPrimaryKey.new(klass))
+        end
+
+        def ensure_option_not_given_as_class!(option_name)
+          if options[option_name] && options[option_name].class == Class
+            raise ArgumentError, "A class was passed to `:#{option_name}` but we are expecting a string."
+          end
         end
     end
 
@@ -416,7 +412,16 @@ module ActiveRecord
         if polymorphic?
           raise ArgumentError, "Polymorphic associations do not support computing the class."
         end
-        active_record.send(:compute_type, name)
+
+        active_record.send(:compute_type, name).tap do |klass|
+          unless klass < ActiveRecord::Base
+            raise ArgumentError, <<-MSG.squish
+              Rails couldn't find a valid model for #{name} association.
+              Please provide the :class_name option on the association declaration.
+              If :class_name is already provided make sure is an ActiveRecord::Base subclass.
+            MSG
+          end
+        end
       end
 
       attr_reader :type, :foreign_type
@@ -426,11 +431,8 @@ module ActiveRecord
         super
         @type = -(options[:foreign_type]&.to_s || "#{options[:as]}_type") if options[:as]
         @foreign_type = -(options[:foreign_type]&.to_s || "#{name}_type") if options[:polymorphic]
-        @constructable = calculate_constructable(macro, options)
 
-        if options[:class_name] && options[:class_name].class == Class
-          raise ArgumentError, "A class was passed to `:class_name` but we are expecting a string."
-        end
+        ensure_option_not_given_as_class!(:class_name)
       end
 
       def association_scope_cache(klass, owner, &block)
@@ -439,10 +441,6 @@ module ActiveRecord
           key = [key, owner._read_attribute(@foreign_type)]
         end
         klass.cached_find_by_statement(key, &block)
-      end
-
-      def constructable? # :nodoc:
-        @constructable
       end
 
       def join_table
@@ -457,17 +455,20 @@ module ActiveRecord
         @association_foreign_key ||= -(options[:association_foreign_key]&.to_s || class_name.foreign_key)
       end
 
-      # klass option is necessary to support loading polymorphic associations
       def association_primary_key(klass = nil)
-        if primary_key = options[:primary_key]
-          @association_primary_key ||= -primary_key.to_s
-        else
-          primary_key(klass || self.klass)
-        end
+        primary_key(klass || self.klass)
       end
 
       def active_record_primary_key
         @active_record_primary_key ||= -(options[:primary_key]&.to_s || primary_key(active_record))
+      end
+
+      def join_primary_key(klass = nil)
+        foreign_key
+      end
+
+      def join_foreign_key
+        active_record_primary_key
       end
 
       def check_validity!
@@ -570,9 +571,6 @@ module ActiveRecord
         options[:polymorphic]
       end
 
-      VALID_AUTOMATIC_INVERSE_MACROS = [:has_many, :has_one, :belongs_to]
-      INVALID_AUTOMATIC_INVERSE_OPTIONS = [:through, :foreign_key]
-
       def add_as_source(seed)
         seed
       end
@@ -590,10 +588,6 @@ module ActiveRecord
       end
 
       private
-        def calculate_constructable(macro, options)
-          true
-        end
-
         # Attempts to find the inverse association name automatically.
         # If it cannot find a suitable inverse association name, it returns
         # +nil+.
@@ -630,6 +624,7 @@ module ActiveRecord
         # with the current reflection's klass name.
         def valid_inverse_reflection?(reflection)
           reflection &&
+            foreign_key == reflection.foreign_key &&
             klass <= reflection.active_record &&
             can_find_inverse_of_automatically?(reflection)
         end
@@ -645,8 +640,8 @@ module ActiveRecord
         # inverse, so we exclude reflections with scopes.
         def can_find_inverse_of_automatically?(reflection)
           reflection.options[:inverse_of] != false &&
-            VALID_AUTOMATIC_INVERSE_MACROS.include?(reflection.macro) &&
-            !INVALID_AUTOMATIC_INVERSE_OPTIONS.any? { |opt| reflection.options[opt] } &&
+            !reflection.options[:through] &&
+            !reflection.options[:foreign_key] &&
             !reflection.scope
         end
 
@@ -683,10 +678,6 @@ module ActiveRecord
           Associations::HasManyAssociation
         end
       end
-
-      def association_primary_key(klass = nil)
-        primary_key(klass || self.klass)
-      end
     end
 
     class HasOneReflection < AssociationReflection # :nodoc:
@@ -701,11 +692,6 @@ module ActiveRecord
           Associations::HasOneAssociation
         end
       end
-
-      private
-        def calculate_constructable(macro, options)
-          !options[:through]
-        end
     end
 
     class BelongsToReflection < AssociationReflection # :nodoc:
@@ -721,6 +707,15 @@ module ActiveRecord
         end
       end
 
+      # klass option is necessary to support loading polymorphic associations
+      def association_primary_key(klass = nil)
+        if primary_key = options[:primary_key]
+          @association_primary_key ||= -primary_key.to_s
+        else
+          primary_key(klass || self.klass)
+        end
+      end
+
       def join_primary_key(klass = nil)
         polymorphic? ? association_primary_key(klass) : association_primary_key
       end
@@ -729,13 +724,13 @@ module ActiveRecord
         foreign_key
       end
 
+      def join_foreign_type
+        foreign_type
+      end
+
       private
         def can_find_inverse_of_automatically?(_)
           !polymorphic? && super
-        end
-
-        def calculate_constructable(macro, options)
-          !polymorphic?
         end
     end
 
@@ -757,6 +752,8 @@ module ActiveRecord
         @delegate_reflection = delegate_reflection
         @klass = delegate_reflection.options[:anonymous_class]
         @source_reflection_name = delegate_reflection.options[:source]
+
+        ensure_option_not_given_as_class!(:source_type)
       end
 
       def through_reflection?
@@ -764,17 +761,7 @@ module ActiveRecord
       end
 
       def klass
-        @klass ||= delegate_reflection.compute_class(class_name).tap do |klass|
-          if !parent_reflection.is_a?(HasAndBelongsToManyReflection) &&
-             !(klass.reflections.key?(options[:through].to_s) ||
-               klass.reflections.key?(options[:through].to_s.pluralize)) &&
-             active_record.type_for_attribute(active_record.primary_key).type != :integer
-            raise NotImplementedError, <<~MSG.squish
-              In order to correctly type cast #{active_record}.#{active_record.primary_key},
-              #{klass} needs to define a :#{options[:through]} association.
-            MSG
-          end
-        end
+        @klass ||= delegate_reflection.compute_class(class_name)
       end
 
       # Returns the source of the through reflection. It checks both a singularized
@@ -1013,7 +1000,7 @@ module ActiveRecord
 
     class PolymorphicReflection < AbstractReflection # :nodoc:
       delegate :klass, :scope, :plural_name, :type, :join_primary_key, :join_foreign_key,
-               :scope_for, to: :@reflection
+               :name, :scope_for, to: :@reflection
 
       def initialize(reflection, previous_reflection)
         @reflection = reflection
@@ -1050,7 +1037,7 @@ module ActiveRecord
       end
 
       def aliased_table
-        @aliased_table ||= Arel::Table.new(table_name, type_caster: klass.type_caster)
+        klass.arel_table
       end
 
       def join_primary_key(klass = self.klass)

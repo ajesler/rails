@@ -2,7 +2,7 @@
 
 module ActiveRecord
   class TableMetadata # :nodoc:
-    delegate :foreign_type, :foreign_key, :join_primary_key, :join_foreign_key, to: :reflection, prefix: :association
+    delegate :join_primary_key, :join_foreign_key, :join_foreign_type, to: :reflection
 
     def initialize(klass, arel_table, reflection = nil)
       @klass = klass
@@ -10,12 +10,8 @@ module ActiveRecord
       @reflection = reflection
     end
 
-    def arel_attribute(column_name)
-      if klass
-        klass.arel_attribute(column_name, arel_table)
-      else
-        arel_table[column_name]
-      end
+    def primary_key
+      klass&.primary_key
     end
 
     def type(column_name)
@@ -37,11 +33,15 @@ module ActiveRecord
         return self
       end
 
-      reflection ||= yield table_name if block_given?
+      if reflection
+        association_klass = reflection.klass unless reflection.polymorphic?
+      elsif block_given?
+        association_klass = yield table_name
+      end
 
-      if reflection && !reflection.polymorphic?
-        association_klass = reflection.klass
-        arel_table = association_klass.arel_table.alias(table_name)
+      if association_klass
+        arel_table = association_klass.arel_table
+        arel_table = arel_table.alias(table_name) if arel_table.name != table_name
         TableMetadata.new(association_klass, arel_table, reflection)
       else
         type_caster = TypeCaster::Connection.new(klass, table_name)
@@ -73,7 +73,9 @@ module ActiveRecord
       end
     end
 
+    attr_reader :arel_table
+
     private
-      attr_reader :klass, :arel_table, :reflection
+      attr_reader :klass, :reflection
   end
 end

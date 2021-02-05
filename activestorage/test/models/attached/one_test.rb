@@ -32,7 +32,7 @@ class ActiveStorage::OneAttachedTest < ActiveSupport::TestCase
   test "attaching an existing blob from a signed ID passes record" do
     blob = create_blob(filename: "funky.jpg")
     arguments = [blob.signed_id, record: @user]
-    assert_called_with(ActiveStorage::Blob, :find_signed, arguments, returns: blob) do
+    assert_called_with(ActiveStorage::Blob, :find_signed!, arguments, returns: blob) do
       @user.avatar.attach blob.signed_id
     end
   end
@@ -319,6 +319,13 @@ class ActiveStorage::OneAttachedTest < ActiveSupport::TestCase
     assert_equal 2736, @user.avatar.metadata[:height]
   end
 
+  test "creating an attachment as part of an autosave association through nested attributes" do
+    group = Group.create!(users_attributes: [{ name: "John", avatar: { io: StringIO.new("STUFF"), filename: "town.jpg", content_type: "image/jpg" } }])
+    group.save!
+    new_user = User.find_by(name: "John")
+    assert new_user.avatar.attached?
+  end
+
   test "updating an attachment as part of an autosave association" do
     group = Group.create!(users: [@user])
     @user.avatar = fixture_file_upload("racecar.jpg")
@@ -449,7 +456,9 @@ class ActiveStorage::OneAttachedTest < ActiveSupport::TestCase
       @user.avatar.attach blob
       assert @user.avatar.attached?
 
-      @user.avatar.purge
+      assert_changes -> { @user.updated_at } do
+        @user.avatar.purge
+      end
       assert_not @user.avatar.attached?
       assert_not ActiveStorage::Blob.exists?(blob.id)
       assert_not ActiveStorage::Blob.service.exist?(blob.key)
@@ -478,7 +487,9 @@ class ActiveStorage::OneAttachedTest < ActiveSupport::TestCase
       assert @user.avatar.attached?
 
       perform_enqueued_jobs do
-        @user.avatar.purge_later
+        assert_changes -> { @user.updated_at } do
+          @user.avatar.purge_later
+        end
       end
 
       assert_not @user.avatar.attached?
@@ -597,5 +608,25 @@ class ActiveStorage::OneAttachedTest < ActiveSupport::TestCase
     end
 
     assert_match(/Cannot configure service :unknown for User#featured_photo/, error.message)
+  end
+
+  test "creating variation by variation name" do
+    @user.avatar_with_variants.attach fixture_file_upload("racecar.jpg")
+    variant = @user.avatar_with_variants.variant(:thumb).processed
+
+    image = read_image(variant)
+    assert_equal "JPEG", image.type
+    assert_equal 100, image.width
+    assert_equal 67, image.height
+  end
+
+  test "raises error when unknown variant name is used" do
+    @user.avatar_with_variants.attach fixture_file_upload("racecar.jpg")
+
+    error = assert_raises ArgumentError do
+      @user.avatar_with_variants.variant(:unknown).processed
+    end
+
+    assert_match(/Cannot find variant :unknown for User#avatar_with_variants/, error.message)
   end
 end

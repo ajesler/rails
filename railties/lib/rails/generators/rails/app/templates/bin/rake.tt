@@ -1,7 +1,6 @@
-<% if options.skip_spring? -%>
-require_relative "../config/boot"
-<% else -%>
-require_relative "../config/boot_with_spring"
+<% if spring_install? -%>
+load File.expand_path("spring", __dir__)
 <% end -%>
+require_relative "../config/boot"
 require "rake"
 Rake.application.run

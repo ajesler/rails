@@ -424,26 +424,30 @@ module ActiveRecord
       end
 
       def check_constraints(table_name)
-        scope = quoted_scope(table_name)
+        if supports_check_constraints?
+          scope = quoted_scope(table_name)
 
-        chk_info = exec_query(<<~SQL, "SCHEMA")
-          SELECT cc.constraint_name AS 'name',
-                 cc.check_clause AS 'expression'
-          FROM information_schema.check_constraints cc
-          JOIN information_schema.table_constraints tc
-          USING (constraint_schema, constraint_name)
-          WHERE tc.table_schema = #{scope[:schema]}
-            AND tc.table_name = #{scope[:name]}
-            AND cc.constraint_schema = #{scope[:schema]}
-        SQL
+          chk_info = exec_query(<<~SQL, "SCHEMA")
+            SELECT cc.constraint_name AS 'name',
+                  cc.check_clause AS 'expression'
+            FROM information_schema.check_constraints cc
+            JOIN information_schema.table_constraints tc
+            USING (constraint_schema, constraint_name)
+            WHERE tc.table_schema = #{scope[:schema]}
+              AND tc.table_name = #{scope[:name]}
+              AND cc.constraint_schema = #{scope[:schema]}
+          SQL
 
-        chk_info.map do |row|
-          options = {
-            name: row["name"]
-          }
-          expression = row["expression"]
-          expression = expression[1..-2] unless mariadb? # remove parentheses added by mysql
-          CheckConstraintDefinition.new(table_name, expression, options)
+          chk_info.map do |row|
+            options = {
+              name: row["name"]
+            }
+            expression = row["expression"]
+            expression = expression[1..-2] unless mariadb? # remove parentheses added by mysql
+            CheckConstraintDefinition.new(table_name, expression, options)
+          end
+        else
+          raise NotImplementedError
         end
       end
 
@@ -496,21 +500,6 @@ module ActiveRecord
             AND table_name = #{scope[:name]}
           ORDER BY seq_in_index
         SQL
-      end
-
-      def default_uniqueness_comparison(attribute, value, klass) # :nodoc:
-        column = column_for_attribute(attribute)
-
-        if column.collation && !column.case_sensitive? && !value.nil?
-          ActiveSupport::Deprecation.warn(<<~MSG.squish)
-            Uniqueness validator will no longer enforce case sensitive comparison in Rails 6.1.
-            To continue case sensitive comparison on the :#{attribute.name} attribute in #{klass} model,
-            pass `case_sensitive: true` option explicitly to the uniqueness validator.
-          MSG
-          attribute.eq(Arel::Nodes::Bin.new(value))
-        else
-          super
-        end
       end
 
       def case_sensitive_comparison(attribute, value) # :nodoc:
@@ -576,7 +565,10 @@ module ActiveRecord
         def initialize_type_map(m = type_map)
           super
 
-          register_class_with_limit m, %r(char)i, MysqlString
+          m.register_type(%r(char)i) do |sql_type|
+            limit = extract_limit(sql_type)
+            Type.lookup(:string, adapter: :mysql2, limit: limit)
+          end
 
           m.register_type %r(tinytext)i,   Type::Text.new(limit: 2**8 - 1)
           m.register_type %r(tinyblob)i,   Type::Binary.new(limit: 2**8 - 1)
@@ -596,11 +588,11 @@ module ActiveRecord
           register_integer_type m, %r(^tinyint)i,   limit: 1
 
           m.register_type %r(^tinyint\(1\))i, Type::Boolean.new if emulate_booleans
-          m.alias_type %r(year)i,          "integer"
-          m.alias_type %r(bit)i,           "binary"
+          m.alias_type %r(year)i, "integer"
+          m.alias_type %r(bit)i,  "binary"
 
-          m.register_type %r(^enum)i, MysqlString.new
-          m.register_type %r(^set)i,  MysqlString.new
+          m.register_type %r(^enum)i, Type.lookup(:string, adapter: :mysql2)
+          m.register_type %r(^set)i,  Type.lookup(:string, adapter: :mysql2)
         end
 
         def register_integer_type(mapping, key, **options)
@@ -621,7 +613,7 @@ module ActiveRecord
           end
         end
 
-        # See https://dev.mysql.com/doc/refman/en/server-error-reference.html
+        # See https://dev.mysql.com/doc/mysql-errors/en/server-error-reference.html
         ER_DB_CREATE_EXISTS     = 1007
         ER_FILSORT_ABORT        = 1028
         ER_DUP_ENTRY            = 1062
@@ -643,6 +635,12 @@ module ActiveRecord
 
         def translate_exception(exception, message:, sql:, binds:)
           case error_number(exception)
+          when nil
+            if exception.message.match?(/MySQL client is not connected/i)
+              ConnectionNotEstablished.new(exception)
+            else
+              super
+            end
           when ER_DB_CREATE_EXISTS
             DatabaseAlreadyExists.new(message, sql: sql, binds: binds)
           when ER_DUP_ENTRY
@@ -753,6 +751,11 @@ module ActiveRecord
           wait_timeout = 2147483 unless wait_timeout.is_a?(Integer)
           variables["wait_timeout"] = wait_timeout
 
+          # Set the collation of the connection character set.
+          if @config[:collation]
+            variables["collation_connection"] = @config[:collation]
+          end
+
           defaults = [":default", :default].to_set
 
           # Make MySQL reject illegal values rather than truncating or blanking them, see
@@ -772,15 +775,6 @@ module ActiveRecord
           end
           sql_mode_assignment = "@@SESSION.sql_mode = #{sql_mode}, " if sql_mode
 
-          # NAMES does not have an equals sign, see
-          # https://dev.mysql.com/doc/refman/en/set-names.html
-          # (trailing comma because variable_assignments will always have content)
-          if @config[:encoding]
-            encoding = +"NAMES #{@config[:encoding]}"
-            encoding << " COLLATE #{@config[:collation]}" if @config[:collation]
-            encoding << ", "
-          end
-
           # Gather up all of the SET variables...
           variable_assignments = variables.map do |k, v|
             if defaults.include?(v)
@@ -792,7 +786,7 @@ module ActiveRecord
           end.compact.join(", ")
 
           # ...and send them all in one query
-          execute("SET #{encoding} #{sql_mode_assignment} #{variable_assignments}", "SCHEMA")
+          execute("SET #{sql_mode_assignment} #{variable_assignments}", "SCHEMA")
         end
 
         def column_definitions(table_name) # :nodoc:
@@ -841,26 +835,16 @@ module ActiveRecord
           full_version_string.match(/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)/)[1]
         end
 
-        class MysqlString < Type::String # :nodoc:
-          def serialize(value)
-            case value
-            when true then "1"
-            when false then "0"
-            else super
-            end
-          end
+        # Alias MysqlString to work Mashal.load(File.read("legacy_record.dump")).
+        # TODO: Remove the constant alias once Rails 6.1 has released.
+        MysqlString = Type::String # :nodoc:
 
-          private
-            def cast_value(value)
-              case value
-              when true then "1"
-              when false then "0"
-              else super
-              end
-            end
+        ActiveRecord::Type.register(:immutable_string, adapter: :mysql2) do |_, **args|
+          Type::ImmutableString.new(true: "1", false: "0", **args)
         end
-
-        ActiveRecord::Type.register(:string, MysqlString, adapter: :mysql2)
+        ActiveRecord::Type.register(:string, adapter: :mysql2) do |_, **args|
+          Type::String.new(true: "1", false: "0", **args)
+        end
         ActiveRecord::Type.register(:unsigned_integer, Type::UnsignedInteger, adapter: :mysql2)
     end
   end

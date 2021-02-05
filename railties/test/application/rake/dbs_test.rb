@@ -343,15 +343,12 @@ module ApplicationTests
         db_migrate_and_status database_url_db_name
       end
 
-      def db_schema_dump(database: nil)
+      def db_schema_dump
         Dir.chdir(app_path) do
           args = ["generate", "model", "book", "title:string"]
-          args << "--database=#{database}" if database
           rails args
           rails "db:migrate", "db:schema:dump"
-          dump_name = database ? "#{database}_schema.rb" : "schema.rb"
-          schema_dump = File.read("db/#{dump_name}")
-          assert_match(/create_table \"books\"/, schema_dump)
+          assert_match(/create_table "books"/, File.read("db/schema.rb"))
         end
       end
 
@@ -428,16 +425,16 @@ module ApplicationTests
             development:
               some_entry:
                 <<: *default
-                database: db/development_other.sqlite3
-                migrations_paths: db/some_entry_migrate
-              primary:
-                <<: *default
                 database: db/development.sqlite3
+              another_entry:
+                <<: *default
+                database: db/another_entry_development.sqlite3
+                migrations_paths: db/another_entry_migrate
             YAML
           end
         end
 
-        db_schema_dump(database: "some_entry")
+        db_schema_dump
         db_schema_cache_dump
       end
 
@@ -479,7 +476,7 @@ module ApplicationTests
           rails "generate", "model", "book", "title:string"
           rails "db:migrate", "db:structure:dump"
           structure_dump = File.read("db/structure.sql")
-          assert_match(/CREATE TABLE (?:IF NOT EXISTS )?\"books\"/, structure_dump)
+          assert_match(/CREATE TABLE (?:IF NOT EXISTS )?"books"/, structure_dump)
           rails "environment", "db:drop", "db:structure:load"
           assert_match expected_database, ActiveRecord::Base.connection_db_config.database
           require "#{app_path}/app/models/book"
@@ -488,19 +485,30 @@ module ApplicationTests
         end
       end
 
+      ["dump", "load"].each do |command|
+        test "db:structure:#{command} is deprecated" do
+          add_to_config("config.active_support.deprecation = :stderr")
+          stderr_output = capture(:stderr) { rails("db:structure:#{command}", stderr: true, allow_failure: true) }
+          assert_match(/DEPRECATION WARNING: Using `bin\/rails db:structure:#{command}` is deprecated and will be removed in Rails 6.2/, stderr_output)
+        end
+      end
+
       test "db:structure:dump and db:structure:load without database_url" do
+        add_to_config "config.active_record.schema_format = :sql"
         require "#{app_path}/config/environment"
         db_config = ActiveRecord::Base.connection_db_config
         db_structure_dump_and_load db_config.database
       end
 
       test "db:structure:dump and db:structure:load with database_url" do
+        add_to_config "config.active_record.schema_format = :sql"
         require "#{app_path}/config/environment"
         set_database_url
         db_structure_dump_and_load database_url_db_name
       end
 
       test "db:structure:dump and db:structure:load set ar_internal_metadata" do
+        add_to_config "config.active_record.schema_format = :sql"
         require "#{app_path}/config/environment"
         db_config = ActiveRecord::Base.connection_db_config
         db_structure_dump_and_load db_config.database
@@ -510,13 +518,14 @@ module ApplicationTests
       end
 
       test "db:structure:dump does not dump schema information when no migrations are used" do
+        add_to_config "config.active_record.schema_format = :sql"
         # create table without migrations
         rails "runner", "ActiveRecord::Base.connection.create_table(:posts) {|t| t.string :title }"
 
         stderr_output = capture(:stderr) { rails("db:structure:dump", stderr: true, allow_failure: true) }
         assert_empty stderr_output
         structure_dump = File.read("#{app_path}/db/structure.sql")
-        assert_match(/CREATE TABLE (?:IF NOT EXISTS )?\"posts\"/, structure_dump)
+        assert_match(/CREATE TABLE (?:IF NOT EXISTS )?"posts"/, structure_dump)
       end
 
       test "db:schema:load and db:structure:load do not purge the existing database" do
@@ -534,6 +543,7 @@ module ApplicationTests
         rails "db:schema:load"
         assert_equal '["posts", "comments", "schema_migrations", "ar_internal_metadata"]', list_tables[]
 
+        add_to_config "config.active_record.schema_format = :sql"
         app_file "db/structure.sql", <<-SQL
           CREATE TABLE "users" ("id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "name" varchar(255));
         SQL
@@ -588,8 +598,15 @@ module ApplicationTests
       end
 
       test "db:test:load_structure without database_url" do
+        add_to_config "config.active_record.schema_format = :sql"
         require "#{app_path}/config/environment"
         db_test_load_structure
+      end
+
+      test "db:test:load_structure is deprecated" do
+        add_to_config("config.active_support.deprecation = :stderr")
+        stderr_output = capture(:stderr) { rails("db:test:load_structure", stderr: true, allow_failure: true) }
+        assert_match(/DEPRECATION WARNING: Using `bin\/rails db:test:load_structure` is deprecated and will be removed in Rails 6.2/, stderr_output)
       end
 
       test "db:setup loads schema and seeds database" do
@@ -736,6 +753,20 @@ module ApplicationTests
           assert_match(/CreateBooks: migrated/, output)
           assert_match(/CreateRecipes: migrated/, output)
         end
+      end
+
+      test "db:prepare setup the database even if schema does not exist" do
+        Dir.chdir(app_path) do
+          use_postgresql(multi_db: true) # bug doesn't exist with sqlite3
+          output = rails("db:drop")
+          assert_match(/Dropped database/, output)
+
+          rails "generate", "model", "recipe", "title:string"
+          output = rails("db:prepare")
+          assert_match(/CreateRecipes: migrated/, output)
+        end
+      ensure
+        rails "db:drop" rescue nil
       end
 
       test "db:prepare does not touch schema when dumping is disabled" do

@@ -52,7 +52,7 @@ module ActiveRecord
         attr_reader :value_transformation
 
         def join(table, constraint)
-          table.create_join(table, table.create_on(constraint), Arel::Nodes::LeadingJoin)
+          Arel::Nodes::LeadingJoin.new(table, Arel::Nodes::On.new(constraint))
         end
 
         def last_chain_scope(scope, reflection, owner)
@@ -106,11 +106,9 @@ module ActiveRecord
           name = reflection.name
           chain = [Reflection::RuntimeReflection.new(reflection, association)]
           reflection.chain.drop(1).each do |refl|
-            aliased_table = tracker.aliased_table_for(
-              refl.table_name,
-              refl.alias_candidate(name),
-              refl.klass.type_caster
-            )
+            aliased_table = tracker.aliased_table_for(refl.klass.arel_table) do
+              refl.alias_candidate(name)
+            end
             chain << ReflectionProxy.new(refl, aliased_table)
           end
           chain
@@ -133,11 +131,13 @@ module ActiveRecord
               if scope_chain_item == chain_head.scope
                 scope.merge! item.except(:where, :includes, :unscope, :order)
               elsif !item.references_values.empty?
-                join_dependency = item.construct_join_dependency(
-                  item.eager_load_values | item.includes_values, Arel::Nodes::OuterJoin
-                )
-                scope.joins!(*item.joins_values, join_dependency)
-                scope.left_outer_joins!(*item.left_outer_joins_values)
+                scope.merge! item.only(:joins, :left_outer_joins)
+
+                associations = item.eager_load_values | item.includes_values
+
+                unless associations.empty?
+                  scope.joins! item.construct_join_dependency(associations, Arel::Nodes::OuterJoin)
+                end
               end
 
               reflection.all_includes do

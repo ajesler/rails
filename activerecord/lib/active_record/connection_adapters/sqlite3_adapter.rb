@@ -76,16 +76,6 @@ module ActiveRecord
         json:         { name: "json" },
       }
 
-      def self.represent_boolean_as_integer=(value) # :nodoc:
-        if value == false
-          raise "`.represent_boolean_as_integer=` is now always true, so make sure your application can work with it and remove this settings."
-        end
-
-        ActiveSupport::Deprecation.warn(
-          "`.represent_boolean_as_integer=` is now always true, so setting this is deprecated and will be removed in Rails 6.1."
-        )
-      end
-
       class StatementPool < ConnectionAdapters::StatementPool # :nodoc:
         private
           def dealloc(stmt)
@@ -475,23 +465,24 @@ module ActiveRecord
         end
 
         def translate_exception(exception, message:, sql:, binds:)
-          case exception.message
           # SQLite 3.8.2 returns a newly formatted error message:
           #   UNIQUE constraint failed: *table_name*.*column_name*
           # Older versions of SQLite return:
           #   column *column_name* is not unique
-          when /column(s)? .* (is|are) not unique/, /UNIQUE constraint failed: .*/
+          if exception.message.match?(/(column(s)? .* (is|are) not unique|UNIQUE constraint failed: .*)/i)
             RecordNotUnique.new(message, sql: sql, binds: binds)
-          when /.* may not be NULL/, /NOT NULL constraint failed: .*/
+          elsif exception.message.match?(/(.* may not be NULL|NOT NULL constraint failed: .*)/i)
             NotNullViolation.new(message, sql: sql, binds: binds)
-          when /FOREIGN KEY constraint failed/i
+          elsif exception.message.match?(/FOREIGN KEY constraint failed/i)
             InvalidForeignKey.new(message, sql: sql, binds: binds)
+          elsif exception.message.match?(/called on a closed database/i)
+            ConnectionNotEstablished.new(exception)
           else
             super
           end
         end
 
-        COLLATE_REGEX = /.*\"(\w+)\".*collate\s+\"(\w+)\".*/i.freeze
+        COLLATE_REGEX = /.*"(\w+)".*collate\s+"(\w+)".*/i.freeze
 
         def table_structure_with_collation(table_name, basic_structure)
           collation_hash = {}
@@ -505,12 +496,12 @@ module ActiveRecord
           # Result will have following sample string
           # CREATE TABLE "users" ("id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
           #                       "password_digest" varchar COLLATE "NOCASE");
-          result = exec_query(sql, "SCHEMA").first
+          result = query_value(sql, "SCHEMA")
 
           if result
             # Splitting with left parentheses and discarding the first part will return all
             # columns separated with comma(,).
-            columns_string = result["sql"].split("(", 2).last
+            columns_string = result.split("(", 2).last
 
             columns_string.split(",").each do |column_string|
               # This regex will match the column name and collation type and will save
@@ -518,7 +509,7 @@ module ActiveRecord
               collation_hash[$1] = $2 if COLLATE_REGEX =~ column_string
             end
 
-            basic_structure.map! do |column|
+            basic_structure.map do |column|
               column_name = column["name"]
 
               if collation_hash.has_key? column_name

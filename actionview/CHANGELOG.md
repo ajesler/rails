@@ -1,104 +1,92 @@
-*   Ensure cache fragment digests include all relevant template dependencies when
-    fragments are contained in a block passed to the render helper. Remove the
-    virtual_path keyword arguments found in CacheHelper as they no longer possess
-    any function following 1581cab.
+*   Add a `nonce: true` option to the `stylesheet_link_tag` helper to support automatic nonce generation for Content Security Policies.
 
-    Fixes #38984
+    *AJ Esler*
 
-    *Aaron Lipman*
+*   Remove legacy default `media=screen` from `stylesheet_link_tag`.
 
-*   Deprecate `config.action_view.raise_on_missing_translations` in favor of
-    `config.i18n.raise_on_missing_translations`.
+    *André Luis Leal Cardoso Junior*
 
-    New generalized configuration option now determines whether an error should be raised
-    for missing translations in controllers and views.
+*   Change `ActionView::Helpers::FormBuilder#button` to transform `formmethod`
+    attributes into `_method="$VERB"` Form Data to enable varied same-form actions:
 
-    *fatkodima*
+        <%= form_with model: post, method: :put do %>
+          <%= form.button "Update" %>
+          <%= form.button "Delete", formmethod: :delete %>
+        <% end %>
+        <%# => <form action="posts/1">
+            =>   <input type="hidden" name="_method" value="put">
+            =>   <button type="submit">Update</button>
+            =>   <button type="submit" formmethod="post" name="_method" value="delete">Delete</button>
+            => </form>
+        %>
 
-*   Instrument layout rendering in `TemplateRenderer#render_with_layout` as `render_layout.action_view`, and include (when necessary) the layout's virtual path in notification payloads for collection and partial renders.
+    *Sean Doyle*
 
-    *Zach Kemp*
+*   Change `ActionView::Helpers::UrlHelper#button_to` to *always* render a
+    `<button>` element, regardless of whether or not the content is passed as
+    the first argument or as a block.
 
-*   `ActionView::Base.annotate_rendered_view_with_filenames` annotates HTML output with template file names.
+        <%= button_to "Delete", post_path(@post), method: :delete %>
+        <%# => <form action="/posts/1"><input type="hidden" name="_method" value="delete"><button type="submit">Delete</button></form>
 
-    *Joel Hawksley*, *Aaron Patterson*
+        <%= button_to post_path(@post), method: :delete do %>
+          Delete
+        <% end %>
+        <%# => <form action="/posts/1"><input type="hidden" name="_method" value="delete"><button type="submit">Delete</button></form>
 
-*   `ActionView::Helpers::TranslationHelper#translate` returns nil when
-    passed `default: nil` without a translation matching `I18n#translate`.
+    *Sean Doyle*, *Dusan Orlovic*
 
-    *Stefan Wrobel*
+*   Add `config.action_view.preload_links_header` to allow disabling of
+    the `Link` header being added by default when using `stylesheet_link_tag`
+    and `javascript_include_tag`.
 
-*   `OptimizedFileSystemResolver` prefers template details in order of locale,
-    formats, variants, handlers.
+    *Andrew White*
 
-    *Iago Pimenta*
+*   The `translate` helper now resolves `default` values when a `nil` key is
+    specified, instead of always returning `nil`.
 
-*   Added `class_names` helper to create a CSS class value with conditional classes.
+    *Jonathan Hefner*
 
-    *Joel Hawksley*, *Aaron Patterson*
+*   Add `config.action_view.image_loading` to configure the default value of
+    the `image_tag` `:loading` option.
 
-*   Add support for conditional values to TagBuilder.
+    By setting `config.action_view.image_loading = "lazy"`, an application can opt in to
+    lazy loading images sitewide, without changing view code.
 
-    *Joel Hawksley*
+    *Jonathan Hefner*
 
-*   `ActionView::Helpers::FormOptionsHelper#select` should mark option for `nil` as selected.
+*   `ActionView::Helpers::FormBuilder#id` returns the value
+    of the `<form>` element's `id` attribute. With a `method` argument, returns
+    the `id` attribute for a form field with that name.
 
-    ```ruby
-    @post = Post.new
-    @post.category = nil
+        <%= form_for @post do |f| %>
+          <%# ... %>
 
-    # Before
-    select("post", "category", none: nil, programming: 1, economics: 2)
-    # =>
-    # <select name="post[category]" id="post_category">
-    #   <option value="">none</option>
-    #  <option value="1">programming</option>
-    #  <option value="2">economics</option>
-    # </select>
+          <% content_for :sticky_footer do %>
+            <%= form.button(form: f.id) %>
+          <% end %>
+        <% end %>
 
-    # After
-    select("post", "category", none: nil, programming: 1, economics: 2)
-    # =>
-    # <select name="post[category]" id="post_category">
-    #   <option selected="selected" value="">none</option>
-    #  <option value="1">programming</option>
-    #  <option value="2">economics</option>
-    # </select>
-    ```
+    *Sean Doyle*
 
-    *bogdanvlviv*
+*   `ActionView::Helpers::FormBuilder#field_id` returns the value generated by
+    the FormBuilder for the given attribute name.
 
-*   Log lines for partial renders and started template renders are now
-    emitted at the `DEBUG` level instead of `INFO`.
+        <%= form_for @post do |f| %>
+          <%= f.label :title %>
+          <%= f.text_field :title, aria: { describedby: f.field_id(:title, :error) } %>
+          <%= tag.span("is blank", id: f.field_id(:title, :error) %>
+        <% end %>
 
-    Completed template renders are still logged at the `INFO` level.
+    *Sean Doyle*
 
-    *DHH*
+*   Add `tag.attributes` to transform a Hash into HTML Attributes, ready to be
+    interpolated into ERB.
 
-*   ActionView::Helpers::SanitizeHelper: support rails-html-sanitizer 1.1.0.
+        <input <%= tag.attributes(type: :text, aria: { label: "Search" }) %> >
+        # => <input type="text" aria-label="Search">
 
-    *Juanito Fatas*
-
-*   Added `phone_to` helper method to create a link from mobile numbers.
-
-    *Pietro Moro*
-
-*   annotated_source_code returns an empty array so TemplateErrors without a
-    template in the backtrace are surfaced properly by DebugExceptions.
-
-    *Guilherme Mansur*, *Kasper Timm Hansen*
-
-*   Add autoload for SyntaxErrorInTemplate so syntax errors are correctly raised by DebugExceptions.
-
-    *Guilherme Mansur*, *Gannon McGibbon*
-
-*   `RenderingHelper` supports rendering objects that `respond_to?` `:render_in`.
-
-    *Joel Hawksley*, *Natasha Umer*, *Aaron Patterson*, *Shawn Allen*, *Emily Plummer*, *Diana Mounter*, *John Hawthorn*, *Nathan Herald*, *Zaid Zawaideh*, *Zach Ahn*
-
-*   Fix `select_tag` so that it doesn't change `options` when `include_blank` is present.
-
-    *Younes SERRAJ*
+    *Sean Doyle*
 
 
-Please check [6-0-stable](https://github.com/rails/rails/blob/6-0-stable/actionview/CHANGELOG.md) for previous changes.
+Please check [6-1-stable](https://github.com/rails/rails/blob/6-1-stable/actionview/CHANGELOG.md) for previous changes.

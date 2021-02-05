@@ -2,12 +2,22 @@
 
 module ActiveRecord
   class PredicateBuilder # :nodoc:
+    require "active_record/relation/predicate_builder/array_handler"
+    require "active_record/relation/predicate_builder/basic_object_handler"
+    require "active_record/relation/predicate_builder/range_handler"
+    require "active_record/relation/predicate_builder/relation_handler"
+    require "active_record/relation/predicate_builder/association_query_value"
+    require "active_record/relation/predicate_builder/polymorphic_array_value"
+
+    # No-op BaseHandler to work Mashal.load(File.read("legacy_relation.dump")).
+    # TODO: Remove the constant alias once Rails 6.1 has released.
+    BaseHandler = BasicObjectHandler
+
     def initialize(table)
       @table = table
       @handlers = []
 
       register_handler(BasicObject, BasicObjectHandler.new(self))
-      register_handler(Base, BaseHandler.new(self))
       register_handler(Range, RangeHandler.new(self))
       register_handler(Relation, RelationHandler.new)
       register_handler(Array, ArrayHandler.new(self))
@@ -15,21 +25,18 @@ module ActiveRecord
     end
 
     def build_from_hash(attributes, &block)
-      attributes = attributes.stringify_keys
       attributes = convert_dot_notation_to_hash(attributes)
-
       expand_from_hash(attributes, &block)
     end
 
     def self.references(attributes)
-      attributes.map do |key, value|
-        key = key.to_s
+      attributes.each_with_object([]) do |(key, value), result|
         if value.is_a?(Hash)
-          key
-        else
-          key.split(".").first if key.include?(".")
+          result << Arel.sql(key)
+        elsif key.include?(".")
+          result << Arel.sql(key.split(".").first)
         end
-      end.compact
+      end
     end
 
     # Define how a class is converted to Arel nodes when passed to +where+.
@@ -47,22 +54,27 @@ module ActiveRecord
       @handlers.unshift([klass, handler])
     end
 
-    def build(attribute, value)
-      if table.type(attribute.name).force_equality?(value)
+    def [](attr_name, value, operator = nil)
+      build(table.arel_table[attr_name], value, operator)
+    end
+
+    def build(attribute, value, operator = nil)
+      value = value.id if value.respond_to?(:id)
+      if operator ||= table.type(attribute.name).force_equality?(value) && :eq
         bind = build_bind_attribute(attribute.name, value)
-        attribute.eq(bind)
+        attribute.public_send(operator, bind)
       else
         handler_for(value).call(attribute, value)
       end
     end
 
     def build_bind_attribute(column_name, value)
-      attr = Relation::QueryAttribute.new(column_name.to_s, value, table.type(column_name))
+      attr = Relation::QueryAttribute.new(column_name, value, table.type(column_name))
       Arel::Nodes::BindParam.new(attr)
     end
 
     def resolve_arel_attribute(table_name, column_name, &block)
-      table.associated_table(table_name, &block).arel_attribute(column_name)
+      table.associated_table(table_name, &block).arel_table[column_name]
     end
 
     protected
@@ -81,14 +93,11 @@ module ActiveRecord
             # PriceEstimate.where(estimate_of: treasure)
             associated_table = table.associated_table(key)
             if associated_table.polymorphic_association?
-              case value.is_a?(Array) ? value.first : value
-              when Base, Relation
-                value = [value] unless value.is_a?(Array)
-                klass = PolymorphicArrayValue
-              end
+              value = [value] unless value.is_a?(Array)
+              klass = PolymorphicArrayValue
             elsif associated_table.through_association?
               next associated_table.predicate_builder.expand_from_hash(
-                associated_table.association_join_foreign_key => value
+                associated_table.primary_key => value
               )
             end
 
@@ -106,18 +115,18 @@ module ActiveRecord
               values = values.map do |object|
                 object.respond_to?(aggr_attr) ? object.public_send(aggr_attr) : object
               end
-              build(table.arel_attribute(column_name), values)
+              self[column_name, values]
             else
               queries = values.map do |object|
                 mapping.map do |field_attr, aggregate_attr|
-                  build(table.arel_attribute(field_attr), object.try!(aggregate_attr))
+                  self[field_attr, object.try!(aggregate_attr)]
                 end
               end
 
               grouping_queries(queries)
             end
           else
-            build(table.arel_attribute(key), value)
+            self[key, value]
           end
         end
       end
@@ -156,12 +165,3 @@ module ActiveRecord
       end
   end
 end
-
-require "active_record/relation/predicate_builder/array_handler"
-require "active_record/relation/predicate_builder/base_handler"
-require "active_record/relation/predicate_builder/basic_object_handler"
-require "active_record/relation/predicate_builder/range_handler"
-require "active_record/relation/predicate_builder/relation_handler"
-
-require "active_record/relation/predicate_builder/association_query_value"
-require "active_record/relation/predicate_builder/polymorphic_array_value"

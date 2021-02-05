@@ -19,8 +19,6 @@ module ActiveRecord
       include TimeZoneConversion
       include Dirty
       include Serialization
-
-      delegate :column_for_attribute, to: :class
     end
 
     RESTRICTED_CLASS_METHODS = %w(private public protected allocate new name parent superclass)
@@ -150,7 +148,7 @@ module ActiveRecord
       #   Person.attribute_method?(:age=)    # => true
       #   Person.attribute_method?(:nothing) # => false
       def attribute_method?(attribute)
-        super || (table_exists? && column_names.include?(attribute.to_s.sub(/=$/, "")))
+        super || (table_exists? && column_names.include?(attribute.to_s.delete_suffix("=")))
       end
 
       # Returns an array of column names as strings if it's not an abstract class and
@@ -166,7 +164,7 @@ module ActiveRecord
           attribute_types.keys
         else
           []
-        end
+        end.freeze
       end
 
       # Returns true if the given attribute exists, otherwise false.
@@ -187,26 +185,6 @@ module ActiveRecord
 
       def _has_attribute?(attr_name) # :nodoc:
         attribute_types.key?(attr_name)
-      end
-
-      # Returns the column object for the named attribute.
-      # Returns a +ActiveRecord::ConnectionAdapters::NullColumn+ if the
-      # named attribute does not exist.
-      #
-      #   class Person < ActiveRecord::Base
-      #   end
-      #
-      #   person = Person.new
-      #   person.column_for_attribute(:name) # the result depends on the ConnectionAdapter
-      #   # => #<ActiveRecord::ConnectionAdapters::Column:0x007ff4ab083980 @name="name", @sql_type="varchar(255)", @null=true, ...>
-      #
-      #   person.column_for_attribute(:nothing)
-      #   # => #<ActiveRecord::ConnectionAdapters::NullColumn:0xXXX @name=nil, @sql_type=nil, @cast_type=#<Type::Value>, ...>
-      def column_for_attribute(name)
-        name = name.to_s
-        columns_hash.fetch(name) do
-          ConnectionAdapters::NullColumn.new(name)
-        end
       end
     end
 
@@ -305,8 +283,9 @@ module ActiveRecord
     #   # => "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]"
     def attribute_for_inspect(attr_name)
       attr_name = attr_name.to_s
+      attr_name = self.class.attribute_aliases[attr_name] || attr_name
       value = _read_attribute(attr_name)
-      format_for_inspect(value)
+      format_for_inspect(attr_name, value)
     end
 
     # Returns +true+ if the specified +attribute+ has been set by the user or by a
@@ -326,6 +305,7 @@ module ActiveRecord
     #   task.attribute_present?(:is_done) # => true
     def attribute_present?(attr_name)
       attr_name = attr_name.to_s
+      attr_name = self.class.attribute_aliases[attr_name] || attr_name
       value = _read_attribute(attr_name)
       !value.nil? && !(value.respond_to?(:empty?) && value.empty?)
     end
@@ -427,13 +407,19 @@ module ActiveRecord
         end
       end
 
-      def format_for_inspect(value)
-        if value.is_a?(String) && value.length > 50
-          "#{value[0, 50]}...".inspect
-        elsif value.is_a?(Date) || value.is_a?(Time)
-          %("#{value.to_s(:inspect)}")
-        else
+      def format_for_inspect(name, value)
+        if value.nil?
           value.inspect
+        else
+          inspected_value = if value.is_a?(String) && value.length > 50
+            "#{value[0, 50]}...".inspect
+          elsif value.is_a?(Date) || value.is_a?(Time)
+            %("#{value.to_s(:inspect)}")
+          else
+            value.inspect
+          end
+
+          inspection_filter.filter_param(name, inspected_value)
         end
       end
 
